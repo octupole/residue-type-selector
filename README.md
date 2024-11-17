@@ -13,7 +13,7 @@ A PyMOL plugin that automatically creates selections for each unique residue typ
 
 ### From GitHub:
 ```bash
-git clone https://github.com/yourusername/residue-type-selector.git
+git clone https://github.com/octupole/residue-type-selector.git
 cd residue-type-selector
 pip install .
 ```
