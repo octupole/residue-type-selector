@@ -1,11 +1,7 @@
 # File: __init__.py
 from pymol import cmd
-from pymol.plugins import addmenuitemqt
-
-def __init_plugin__(app=None):
-    '''Add plugin to the PyMOL menu'''
-    addmenuitemqt('Plugin', 'Residue Type Selector', create_selections_by_residue_type)
-
+from pymol import stored
+@cmd.extend
 def create_selections_by_residue_type():
     """
     Automatically creates selections for each unique residue type in the system
@@ -27,4 +23,3 @@ def create_selections_by_residue_type():
     print("Unique residue types found:", ", ".join(sorted(stored.residues)))
 
 # Add the function to PyMOL's command line
-cmd.extend('create_residue_selections', create_selections_by_residue_type)
