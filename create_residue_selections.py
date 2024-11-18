@@ -15,7 +15,7 @@ def create_selections_by_residue_type():
     
     # Create selections for each unique residue type
     for restype in stored.residues:
-        selection_name = f"restype_{restype.lower()}"
+        selection_name = f"{restype.lower()}"
         cmd.select(selection_name, f"resn {restype}")
         print(f"Created selection: {selection_name} for residue type {restype}")
     
