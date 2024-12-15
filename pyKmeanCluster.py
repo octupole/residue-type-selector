@@ -4,8 +4,45 @@ from MDAnalysis.analysis import rms
 import numpy as np
 from sklearn.cluster import KMeans
 import math, os
+from collections import Counter
 
-def cluster_golh_conformations(pdb_file, n_clusters=3, output_dir="clusters"):
+
+def select_residues_in_z_range(selection, z_down, z_up):
+    """
+    Select residues where all atoms have z-coordinates between z_down and z_up.
+
+    Parameters:
+    ----------
+    residue_selection : MDAnalysis.core.groups.ResidueGroup
+        The input residue selection (e.g., u.select_atoms("your_selection").residues).
+    z_down : float
+        The lower z-coordinate limit.
+    z_up : float
+        The upper z-coordinate limit.
+
+    Returns:
+    -------
+    MDAnalysis.core.groups.ResidueGroup
+        ResidueGroup containing residues that meet the criteria.
+    """
+    z_down = float(z_down)  # Ensure z_down is a float
+    z_up = float(z_up)      # Ensure z_up is a float
+
+    # List to store residues that meet the condition
+    selected_residues = []
+    residue_selection=selection.residues
+    # Iterate over the given residues
+    for res in residue_selection:
+        # Check if all atoms in the residue satisfy z_down < z < z_up
+        if all(z_down < atom.position[2] < z_up for atom in res.atoms):
+            selected_residues.append(res.resnum)
+
+    # Convert the list of residues into a ResidueGroup
+    selected_residue_group = residue_selection.universe.residues[selected_residues]
+
+    return selected_residue_group.atoms
+
+def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir="clusters"):
     """
     Clusters conformations of GOLH based on RMSD of C1-C18 carbons using KMeans,
     translates and rotates all molecules in each cluster to align with the first 
@@ -16,10 +53,12 @@ def cluster_golh_conformations(pdb_file, n_clusters=3, output_dir="clusters"):
     except Exception as e:
         raise RuntimeError(f"Error loading PDB: {e}")
 
-    golh = universe.select_atoms("resname GOLH")
+    golh = universe.select_atoms("resname GOLH or resname GOLO")
 
     if not golh:
         raise ValueError("No GOLH residues found in the PDB.")
+    
+    golh=select_residues_in_z_range(golh, z_down, z_up)
 
     carbon_atoms = golh.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18")
 
@@ -44,13 +83,29 @@ def cluster_golh_conformations(pdb_file, n_clusters=3, output_dir="clusters"):
     cluster_labels = kmeans.fit_predict(rmsd_matrix)
 
     print(f"Found {n_clusters} clusters")
+    
+    # unique_values, counts = np.unique(cluster_labels, return_counts=True)
+
+    # # Create a dictionary for easy access
+    # counts_dict = dict(zip(unique_values, counts))
+
+    # # Print the counts
+    # for value, count in counts_dict.items():
+    #     print(f"Value {value}: {count} occurrences")
+    for cluster_id in range(n_clusters):
+        cluster_resname = [mol.resname for i, mol in enumerate(golh.residues) if cluster_labels[i] == cluster_id]
+        counts = Counter(cluster_resname)
+
+        print(f"Cluster {cluster_id}: TOT: {counts['GOLO']+counts['GOLH']}, GOLH: {counts['GOLH']}, GOLO: {counts['GOLO']}") 
+        
+    exit(1)
 
     # --- Align and Write PDB files ---
     os.makedirs(output_dir, exist_ok=True)
 
     for cluster_id in range(n_clusters):
         cluster_members = [mol for i, mol in enumerate(golh.residues) if cluster_labels[i] == cluster_id]
-
+                
         # --- Transformation ---
         ref_molecule = cluster_members[0].atoms  # Select atoms of the reference molecule
         ref_carbon_atoms = ref_molecule.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18")
@@ -104,10 +159,13 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--file", required=True, help="Input PDB file")
     parser.add_argument("-k", "--n_clusters", type=int, default=3, help="Number of clusters for KMeans")
     parser.add_argument("-o", "--output", default="clusters", help="Output directory")
+
+    parser.add_argument("-u", "--zup", type=float, default=60.0, help="Upper limit for the membrane")
+    parser.add_argument("-d", "--zdown", type=float, default=19.0, help="Lower limit for the membrane")  
     args = parser.parse_args()
 
     try:
-        cluster_golh_conformations(args.file, args.n_clusters, args.output)
+        cluster_golh_conformations(args.file, args.zup, args.zdown, args.n_clusters, args.output)
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}")
         
