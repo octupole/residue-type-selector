@@ -1,11 +1,12 @@
 import MDAnalysis as mda
-from MDAnalysis.analysis import align
-from MDAnalysis.analysis import rms
+from MDAnalysis.analysis import align, rms
+
 import numpy as np
 from sklearn.cluster import KMeans
 import math, os
 from collections import Counter
 
+SELECTION_C="name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18"
 
 def select_residues_in_z_range(selection, z_down, z_up):
     """
@@ -35,7 +36,7 @@ def select_residues_in_z_range(selection, z_down, z_up):
     for res in residue_selection:
         # Check if all atoms in the residue satisfy z_down < z < z_up
         if all(z_down < atom.position[2] < z_up for atom in res.atoms):
-            selected_residues.append(res.resnum)
+            selected_residues.append(res.resindex)
 
     # Convert the list of residues into a ResidueGroup
     selected_residue_group = residue_selection.universe.residues[selected_residues]
@@ -60,7 +61,7 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
     
     golh=select_residues_in_z_range(golh, z_down, z_up)
 
-    carbon_atoms = golh.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18")
+    carbon_atoms = golh.select_atoms(SELECTION_C)
 
     if not carbon_atoms:
         raise ValueError("No C1-C18 carbons found in GOLH residues.")
@@ -69,7 +70,7 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
     n_carbons = len(carbon_atoms) // n_molecules
 
     all_carbon_positions = carbon_atoms.positions.reshape(n_molecules, n_carbons, 3)
-    carbon_atomgroups = [mol.atoms.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18") for mol in golh.residues]
+    carbon_atomgroups = [mol.atoms.select_atoms(SELECTION_C) for mol in golh.residues]
 
     rmsd_matrix = np.zeros((n_molecules, n_molecules))
 
@@ -98,7 +99,6 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
 
         print(f"Cluster {cluster_id}: TOT: {counts['GOLO']+counts['GOLH']}, GOLH: {counts['GOLH']}, GOLO: {counts['GOLO']}") 
         
-    exit(1)
 
     # --- Align and Write PDB files ---
     os.makedirs(output_dir, exist_ok=True)
@@ -108,10 +108,10 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
                 
         # --- Transformation ---
         ref_molecule = cluster_members[0].atoms  # Select atoms of the reference molecule
-        ref_carbon_atoms = ref_molecule.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18")
+        ref_carbon_atoms = ref_molecule.select_atoms(SELECTION_C)
 
         for molecule in cluster_members:
-            mobile_carbon_atoms = molecule.atoms.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18")
+            mobile_carbon_atoms = molecule.atoms.select_atoms(SELECTION_C)
 
             # 1. Translation to overlap centers of mass
             translation_vector = ref_carbon_atoms.center_of_mass() - mobile_carbon_atoms.center_of_mass()
@@ -133,8 +133,8 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
 
 
         # --- Calculate and Write Average Structure ---
-        avg_positions = np.mean([mol.atoms.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18").positions for mol in cluster_members], axis=0)
-        avg_universe = mda.Merge(cluster_members[0].atoms.select_atoms("name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18"))  # Use the first molecule as a template
+        avg_positions = np.mean([mol.atoms.select_atoms(SELECTION_C).positions for mol in cluster_members], axis=0)
+        avg_universe = mda.Merge(cluster_members[0].atoms.select_atoms(SELECTION_C))  # Use the first molecule as a template
         avg_universe.atoms.positions = avg_positions
         
         avg_output_filename = os.path.join(output_dir, f"cluster_{cluster_id + 1}_avg.pdb")
@@ -154,6 +154,12 @@ def cluster_golh_conformations(pdb_file, z_up, z_down, n_clusters=3, output_dir=
 
 if __name__ == "__main__":
     import argparse
+    import warnings
+    from Bio import BiopythonDeprecationWarning
+
+    # Suppress BiopythonDeprecationWarning
+    warnings.filterwarnings("ignore", category=BiopythonDeprecationWarning)
+
 
     parser = argparse.ArgumentParser(description="Cluster GOLH conformations using KMeans.")
     parser.add_argument("-f", "--file", required=True, help="Input PDB file")

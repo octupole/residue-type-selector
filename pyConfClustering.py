@@ -4,6 +4,10 @@ from scipy.spatial.transform import Rotation as R
 from sklearn.cluster import DBSCAN
 import MDAnalysis as mda
 import argparse
+import warnings
+
+# Suppress all user warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="MDAnalysis")
 
 # Function to compute RMSD
 def compute_rmsd(positions1, positions2):
