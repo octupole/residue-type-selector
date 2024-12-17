@@ -2,6 +2,7 @@ import argparse
 import MDAnalysis as mda
 import numpy as np
 import matplotlib.pyplot as plt
+import os,sys
 
 class DensityProfileCalculator:
     def __init__(self, trajectory, tpr, axis='z', bins=100, start=0, end=None):
@@ -131,9 +132,26 @@ class CommandLineInterface:
     def parse_args(self):
         return self.parser.parse_args()
 
+
+def check_file_exists(file_path, description):
+    """
+    Check if a file exists, if not, exit with an error message.
+
+    Parameters:
+        file_path (str): Path to the file to check.
+        description (str): Description of the file being checked.
+    """
+    if not os.path.isfile(file_path):
+        print(f"Error: {description} '{file_path}' does not exist.")
+        sys.exit(1)
+
 def main():
     cli = CommandLineInterface()
     args = cli.parse_args()
+    # Check if input files exist
+    check_file_exists(args.trajectory, "Trajectory file")
+    check_file_exists(args.tpr, "TPR file")
+    
     # Initialize the DensityProfileCalculator
     calculator = DensityProfileCalculator(
         trajectory=args.trajectory,
