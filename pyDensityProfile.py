@@ -25,7 +25,7 @@ class DensityProfileCalculator:
         self.end = end
         self.universe = mda.Universe(tpr, trajectory)
 
-    def compute_density_profile(self, selection):
+    def compute_density_profile(self, selector, selection, z_down, z_up):
         """
         Compute the density profile for the specified atom selection.
 
@@ -36,10 +36,13 @@ class DensityProfileCalculator:
             bin_centers (numpy.ndarray): Centers of the histogram bins.
             density (numpy.ndarray): Density values.
         """
+            
+
         positions = []
         for ts in self.universe.trajectory[self.start:self.end]:
             print(f"Processing step: {ts.frame}, timestep: {ts.time} fs")            
-            atoms = selection
+            selection0 = selector.select_residues_in_z_range(selection, z_down, z_up)
+            atoms = selection0
             positions.extend(atoms.positions[:, 'xyz'.index(self.axis)])
             
 
@@ -122,8 +125,8 @@ class CommandLineInterface:
         self.parser.add_argument("-sl", "--selection", default='resname DOPC',help="Path to save the density profile plot.")
         self.parser.add_argument("-a", "--axis", default="z", choices=["x", "y", "z"], help="Axis for density profile (default: z).")
         self.parser.add_argument("-b", "--bins", type=int, default=100, help="Number of bins for the histogram (default: 100).")
-        self.parser.add_argument("--z_down", type=float, help="Lower bound of z-coordinate range for residue selection.")
-        self.parser.add_argument("--z_up", type=float, help="Upper bound of z-coordinate range for residue selection.")
+        self.parser.add_argument("--z_down", type=float, default=-400.0,help="Lower bound of z-coordinate range for residue selection.")
+        self.parser.add_argument("--z_up", type=float, default=400.0,help="Upper bound of z-coordinate range for residue selection.")
         self.parser.add_argument("-s", "--start", type=int, default=0, help="Starting step of the trajectory (default: 0).")
         self.parser.add_argument("-e", "--end", type=int, help="Ending step of the trajectory (default: end of trajectory).")
         self.parser.add_argument("-o", "--output", default="density.xvg", help="Path to save the xmgrace-compatible file.")
@@ -166,15 +169,12 @@ def main():
     selection = calculator.universe.select_atoms(args.selection)
 
 
-    # Optionally filter residues by z range
-    if args.z_down is not None and args.z_up is not None:
-        print("Selecting residues within z range...")
-        selector = ResidueSelector(calculator.universe)
-        selection = selector.select_residues_in_z_range(selection, args.z_down, args.z_up)
+    print("Selecting residues within z range...")
+    selector = ResidueSelector(calculator.universe)
 
     # Compute density profile
     print("Computing density profile...")
-    bin_centers, density = calculator.compute_density_profile(selection)
+    bin_centers, density = calculator.compute_density_profile(selector,selection,args.z_down,args.z_up)
 
     # Plot and save the density profile
     if args.plot:
