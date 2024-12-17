@@ -39,7 +39,7 @@ class MembraneDensity:
     Calculates and analyzes the density profile of a lipid membrane along the z-axis.
     """
 
-    def __init__(self, topology, trajectory, lipid_selection):
+    def __init__(self, topology, trajectory, lipid_selection, start_frame=None, end_frame=None):
         """
         Initializes the MembraneDensity object.
 
@@ -48,11 +48,15 @@ class MembraneDensity:
             trajectory (str): Path to the trajectory file (e.g., 'traj.xtc').
             lipid_selection (str): MDAnalysis selection string for the lipid atoms 
                                     (e.g., 'resname DOPC').
+            start_frame (int, optional): Starting frame for analysis.
+            end_frame (int, optional): Ending frame for analysis.
         """
         self.universe = mda.Universe(topology, trajectory)
         self.lipids = self.universe.select_atoms(lipid_selection)
         self.density_profile = None
-        self.residue_selector = ResidueSelector(self.universe)  # Initialize ResidueSelector
+        self.residue_selector = ResidueSelector(self.universe)
+        self.start_frame = start_frame
+        self.end_frame = end_frame
 
     def calculate_density(self, atom_selection=None):
         """
@@ -64,6 +68,13 @@ class MembraneDensity:
         """
         if atom_selection is None:
             atom_selection = self.lipids
+
+        # Set the trajectory frame range
+        if self.start_frame is not None:
+            self.universe.trajectory[self.start_frame:] 
+        if self.end_frame is not None:
+            self.universe.trajectory[:self.end_frame]
+
         self.density_profile = density.DensityAnalysis(atom_selection, axis=2)
         self.density_profile.run()
 
@@ -114,10 +125,12 @@ if __name__ == "__main__":
     parser.add_argument('-p', '--plot', default='density.png', help='Output filename for the plot')
     parser.add_argument('-zd', '--zdown', help='Lower z-coordinate boundary for residue selection')
     parser.add_argument('-zu', '--zup', help='Upper z-coordinate boundary for residue selection')
+    parser.add_argument('-b', '--begin', type=int, help='Starting frame for analysis')
+    parser.add_argument('-e', '--end', type=int, help='Ending frame for analysis')
 
     args = parser.parse_args()
 
-    membrane_density = MembraneDensity(args.topology, args.trajectory, args.lipid)
+    membrane_density = MembraneDensity(args.topology, args.trajectory, args.lipid, args.begin, args.end)
 
     if args.zdown and args.zup:
         # Select residues within the specified z-range
