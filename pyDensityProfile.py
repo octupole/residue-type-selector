@@ -41,7 +41,6 @@ class DensityProfileCalculator:
             atoms = selection
             positions.extend(atoms.positions[:, 'xyz'.index(self.axis)])
             
-        print(len(positions))
 
         box_length = self.universe.trajectory.ts.dimensions['xyz'.index(self.axis)]
         hist, bin_edges = np.histogram(positions, bins=self.bins, range=(0, box_length), density=True)
@@ -66,7 +65,24 @@ class DensityProfileCalculator:
         plt.grid()
         plt.savefig(output)
         print(f"Density profile saved to {output}")
+    def write_xmgrace_file(self, bin_centers, density, output_file):
+        """
+        Write the density profile to a file compatible with xmgrace.
 
+        Parameters:
+            bin_centers (numpy.ndarray): Centers of the histogram bins (x values).
+            density (numpy.ndarray): Density values (y values).
+            output_file (str): Path to save the xmgrace-compatible file.
+        """
+        with open(output_file, 'w') as f:
+            f.write("# GraceXY format\n")
+            f.write("@    title \"Density Profile\"\n")
+            f.write(f"@    xaxis label \"Z-coordinate (\\cE\\C)\"\n")
+            f.write("@    yaxis label \"Density (a.u.)\"\n")
+            f.write("@TYPE xy\n")
+            for x, y in zip(bin_centers, density):
+                f.write(f"{x:.6f} {y:.6f}\n")
+        print(f"Density profile written to xmgrace file: {output_file}")
 class ResidueSelector:
     """
     Class to handle residue selection based on z-coordinate ranges.
@@ -99,9 +115,9 @@ class ResidueSelector:
 class CommandLineInterface:
     def __init__(self):
         self.parser = argparse.ArgumentParser(description="Compute the density profile for a DOPC membrane.")
-        self.parser.add_argument("-t", "--trajectory", required=True, help="Path to the trajectory file.")
-        self.parser.add_argument("-p", "--tpr", required=True, help="Path to the TPR file.")
-        self.parser.add_argument("-o", "--output", default='density.png',help="Path to save the density profile plot.")
+        self.parser.add_argument("-x", "--trajectory", required=True, help="Path to the trajectory file.")
+        self.parser.add_argument("-t", "--tpr", required=True, help="Path to the TPR file.")
+        self.parser.add_argument("-p", "--plot",help="Path to save the density profile plot.")
         self.parser.add_argument("-sl", "--selection", default='resname DOPC',help="Path to save the density profile plot.")
         self.parser.add_argument("-a", "--axis", default="z", choices=["x", "y", "z"], help="Axis for density profile (default: z).")
         self.parser.add_argument("-b", "--bins", type=int, default=100, help="Number of bins for the histogram (default: 100).")
@@ -109,6 +125,8 @@ class CommandLineInterface:
         self.parser.add_argument("--z_up", type=float, help="Upper bound of z-coordinate range for residue selection.")
         self.parser.add_argument("-s", "--start", type=int, default=0, help="Starting step of the trajectory (default: 0).")
         self.parser.add_argument("-e", "--end", type=int, help="Ending step of the trajectory (default: end of trajectory).")
+        self.parser.add_argument("-o", "--output", default="density.xvg", help="Path to save the xmgrace-compatible file.")
+
 
     def parse_args(self):
         return self.parser.parse_args()
@@ -116,7 +134,6 @@ class CommandLineInterface:
 def main():
     cli = CommandLineInterface()
     args = cli.parse_args()
-
     # Initialize the DensityProfileCalculator
     calculator = DensityProfileCalculator(
         trajectory=args.trajectory,
@@ -142,8 +159,15 @@ def main():
     bin_centers, density = calculator.compute_density_profile(selection)
 
     # Plot and save the density profile
-    print("Saving density profile plot...")
-    calculator.plot_density_profile(bin_centers, density, args.output)
+    if args.plot:
+        print("Saving density profile plot...")
+        calculator.plot_density_profile(bin_centers, density, args.plot)
+
+    if args.output:
+    # Write density profile to xmgrace file
+        print("Writing density profile to xmgrace file...")
+        calculator.write_xmgrace_file(bin_centers, density, args.output)
+    
 
 if __name__ == "__main__":
     main()
