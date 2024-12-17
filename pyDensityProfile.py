@@ -37,8 +37,11 @@ class DensityProfileCalculator:
         """
         positions = []
         for ts in self.universe.trajectory[self.start:self.end]:
-            atoms = self.universe.select_atoms(selection)
+            print(f"Processing step: {ts.frame}, timestep: {ts.time} fs")            
+            atoms = selection
             positions.extend(atoms.positions[:, 'xyz'.index(self.axis)])
+            
+        print(len(positions))
 
         box_length = self.universe.trajectory.ts.dimensions['xyz'.index(self.axis)]
         hist, bin_edges = np.histogram(positions, bins=self.bins, range=(0, box_length), density=True)
@@ -85,25 +88,26 @@ class ResidueSelector:
         """
         z_down = float(z_down)
         z_up = float(z_up)
-
         selected_residues = [
             res.resindex for res in selection.residues
             if all(z_down < atom.position[2] < z_up for atom in res.atoms)
         ]
+        filtered_atoms = selection.select_atoms(f"resid {' '.join([str(res.resid) for res in selection.residues if res.resindex in selected_residues])}")
 
-        return self.universe.residues[selected_residues].atoms
+        return filtered_atoms
 
 class CommandLineInterface:
     def __init__(self):
         self.parser = argparse.ArgumentParser(description="Compute the density profile for a DOPC membrane.")
         self.parser.add_argument("-t", "--trajectory", required=True, help="Path to the trajectory file.")
         self.parser.add_argument("-p", "--tpr", required=True, help="Path to the TPR file.")
-        self.parser.add_argument("-o", "--output", required=True, help="Path to save the density profile plot.")
+        self.parser.add_argument("-o", "--output", default='density.png',help="Path to save the density profile plot.")
+        self.parser.add_argument("-sl", "--selection", default='resname DOPC',help="Path to save the density profile plot.")
         self.parser.add_argument("-a", "--axis", default="z", choices=["x", "y", "z"], help="Axis for density profile (default: z).")
         self.parser.add_argument("-b", "--bins", type=int, default=100, help="Number of bins for the histogram (default: 100).")
         self.parser.add_argument("--z_down", type=float, help="Lower bound of z-coordinate range for residue selection.")
         self.parser.add_argument("--z_up", type=float, help="Upper bound of z-coordinate range for residue selection.")
-        self.parser.add_argument("-b", "--start", type=int, default=0, help="Starting step of the trajectory (default: 0).")
+        self.parser.add_argument("-s", "--start", type=int, default=0, help="Starting step of the trajectory (default: 0).")
         self.parser.add_argument("-e", "--end", type=int, help="Ending step of the trajectory (default: end of trajectory).")
 
     def parse_args(self):
@@ -124,7 +128,8 @@ def main():
     )
 
     # Selection for DOPC
-    selection = calculator.universe.select_atoms("resname DOPC")
+    selection = calculator.universe.select_atoms(args.selection)
+
 
     # Optionally filter residues by z range
     if args.z_down is not None and args.z_up is not None:
