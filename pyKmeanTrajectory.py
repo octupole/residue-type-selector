@@ -1,5 +1,6 @@
 import MDAnalysis as mda
 from MDAnalysis.analysis import align, rms
+
 import numpy as np
 from sklearn.cluster import KMeans
 import os
@@ -9,6 +10,22 @@ SELECTION_C = "name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C
 
 class ResidueSelector:
     """
+    ResidueSelector class for selecting residues based on z-coordinate ranges.
+
+    Attributes:
+        universe (MDAnalysis.Universe): The molecular dynamics universe containing the residues.
+
+    Methods:
+        select_residues_in_z_range(selection, z_down, z_up):
+            Selects residues whose atoms all have z-coordinates within the specified range.
+
+            Parameters:
+                selection (MDAnalysis.core.groups.AtomGroup): The group of atoms to select from.
+                z_down (float): The lower bound of the z-coordinate range.
+                z_up (float): The upper bound of the z-coordinate range.
+
+            Returns:
+                MDAnalysis.core.groups.AtomGroup: The atoms of the selected residues.
     Class to handle residue selection based on z-coordinate ranges.
     """
     def __init__(self, universe):
@@ -28,6 +45,28 @@ class ResidueSelector:
 
 class GOLHClusterer:
     """
+    Attributes:
+        topology_file (str): Path to the topology file.
+        trajectory_file (str): Path to the trajectory file.
+        z_up (float): Upper z-coordinate boundary for residue selection.
+        z_down (float): Lower z-coordinate boundary for residue selection.
+        n_clusters (int): Number of clusters to form. Default is 3.
+        output_dir (str): Directory to save cluster output files. Default is "clusters".
+        begin (int, optional): Starting frame for trajectory analysis. Default is None.
+        end (int, optional): Ending frame for trajectory analysis. Default is None.
+        universe (MDAnalysis.Universe): MDAnalysis Universe object for the given topology and trajectory.
+        selector (ResidueSelector): ResidueSelector object for selecting residues within z range.
+        golh (MDAnalysis.AtomGroup): AtomGroup of selected GOLH/GOLO residues.
+        rmsd_matrix (np.ndarray): Average RMSD matrix across frames.
+        average_positions (list): List of average positions for each atom group.
+        cluster_labels (np.ndarray): Cluster labels for each molecule.
+    Methods:
+        compute_framewise_rmsd():
+        perform_clustering():
+            Cluster molecules using KMeans and print cluster information.
+        write_cluster_outputs(output_dir='clusters'):
+        run():
+            Execute the full clustering workflow: compute RMSD, perform clustering, and write outputs.
     Class to handle clustering of GOLH/GOLO molecules based on RMSD.
     """
     def __init__(self, topology_file, trajectory_file, z_up, z_down, n_clusters=3, output_dir="clusters", begin=None, end=None):
@@ -50,43 +89,77 @@ class GOLHClusterer:
 
 
     def compute_framewise_rmsd(self):
-        """
+        """"
+        This method performs the following steps:
+        1. Initializes storage for RMSD matrices and accumulated positions.
+        2. Selects GOLH or GOLO residues within a specified z-range.
+        3. Initializes reference positions and centers of mass for carbon atom groups.
+        4. Iterates over each frame in the trajectory:
+            a. Selects molecules dynamically per frame.
+            b. Translates and rotates mobile positions to align with reference positions.
+            c. Accumulates positions for averaging.
+            d. Computes the RMSD matrix for the current frame.
+        5. Aggregates RMSD matrices across all frames.
+        6. Computes the average RMSD matrix and average positions.
+        Attributes:
+            rmsd_matrix (np.ndarray): The average RMSD matrix across all frames.
+            average_positions (list): The average positions of atoms across all frames.
+        
         Compute RMSD matrices for each frame and aggregate data across frames.
         """
         rmsd_matrices = []
         carbons=[]
         N=0
         golh=0
-        self.golh=0
         carbon_atomgroups=0
         accumulated_positions =0
-        for ts in self.universe.trajectory[self.begin:self.end]:
+        self.universe.trajectory[self.begin]  # Set to the first frame
+        golh = self.universe.select_atoms("resname GOLH or resname GOLO")
+        golh = self.selector.select_residues_in_z_range(golh, self.z_down, self.z_up)
+        self.golh=golh
+        carbon_atomgroups = [mol.atoms.select_atoms(SELECTION_C) for mol in golh.residues]
+        n_atoms_per_group = [len(ag) for ag in carbon_atomgroups]
+
+        # Initialize storage for accumulated positions
+        accumulated_positions = [np.zeros((n_atoms, 3)) for n_atoms in n_atoms_per_group]
+
+        ref_positions = [ag.positions.copy() for ag in carbon_atomgroups]
+        ref_com=[ag.center_of_mass() for ag in carbon_atomgroups]
+        for n, positions in enumerate(ref_positions):
+            for m, pos in enumerate(positions):
+                ref_positions[n][m] = pos-ref_com[n]
+            ref_com[n]=np.zeros(3)
+
+        for ts in self.universe.trajectory[self.begin:self.end+1]:
             # Select molecules dynamically per frame
             print(f"Processing step: {ts.frame}, timestep: {ts.time} fs")
-            if N == 0:
-                golh = self.universe.select_atoms("resname GOLH or resname GOLO")
-                golh = self.selector.select_residues_in_z_range(golh, self.z_down, self.z_up)
-                self.golh=golh
-                carbon_atomgroups = [mol.atoms.select_atoms(SELECTION_C) for mol in golh.residues]
-                n_atoms_per_group = [len(ag) for ag in carbon_atomgroups]
-
-                # Initialize storage for accumulated positions
-                accumulated_positions = [np.zeros((n_atoms, 3)) for n_atoms in n_atoms_per_group]
-
+            mobile_positions=[ag.positions.copy() for ag in carbon_atomgroups]
+            mobile_com=[ag.center_of_mass() for ag in carbon_atomgroups]
+            
             n_molecules = len(golh.residues)
             if n_molecules == 0:
                 continue  # Skip frames with no molecules in the z range
-            
-            for i, ag in enumerate(carbon_atomgroups):
-                accumulated_positions[i] += ag.positions
 
+            for m,ag in enumerate(ref_com):
+                translation_vector = ref_com[m] - mobile_com[m]
+
+                mobile_positions[m] += translation_vector
+
+            # 2. Rotation using align.rotation_matrix
+                rotation_matrix, rmsd = align.rotation_matrix(mobile_positions[m], ref_positions[m])
+                mobile_positions[m] = mobile_positions[m] @ rotation_matrix.T
+
+                
+            for n, pos in enumerate(mobile_positions):
+                accumulated_positions[n] += pos
+                            
             # Compute RMSD matrix for this frame
             rmsd_matrix = np.zeros((n_molecules, n_molecules))
             for i in range(n_molecules):
                 for j in range(i + 1, n_molecules):
                     rmsd_matrix[i, j] = rms.rmsd(
-                        carbon_atomgroups[i].positions,
-                        carbon_atomgroups[j].positions,
+                        mobile_positions[i],
+                        mobile_positions[j],
                         center=True,
                         superposition=True
                     )
@@ -98,11 +171,23 @@ class GOLHClusterer:
             N+=1
         self.rmsd_matrix = np.mean(rmsd_matrices, axis=0)
         self.average_positions = [pos / float(N) for pos in accumulated_positions]
-
-
+        
     def perform_clustering(self):
         """
-        Cluster molecules using KMeans.
+        Perform K-means clustering on the RMSD matrix and print the results.
+
+        This method uses the KMeans algorithm from scikit-learn to cluster the RMSD matrix
+        into a specified number of clusters. It then prints the number of clusters found
+        and the counts of specific residue names ('GOLO' and 'GOLH') within each cluster.
+
+        Attributes:
+            n_clusters (int): The number of clusters to form.
+            rmsd_matrix (ndarray): The RMSD matrix used for clustering.
+            golh (object): An object containing residue information.
+            cluster_labels (ndarray): The labels of the clusters assigned to each residue.
+
+        Prints:
+            The number of clusters found and the counts of 'GOLO' and 'GOLH' residues in each cluster.
         """
         kmeans = KMeans(n_clusters=self.n_clusters, random_state=0)
         self.cluster_labels = kmeans.fit_predict(self.rmsd_matrix)
@@ -115,7 +200,14 @@ class GOLHClusterer:
 
     def write_cluster_outputs(self, output_dir='clusters'):
         """
-        Write clustered molecules to PDB files.
+        Write the cluster outputs to the specified directory.
+        This method creates a directory for cluster outputs, selects carbon atoms from the residues,
+        and processes each cluster to align and translate the molecules. It then calculates the average
+        structure for each cluster and writes it to a PDB file.
+        Parameters:
+        output_dir (str): The directory where the cluster output files will be saved. Default is 'clusters'.
+        Returns:
+        None
         """
         os.makedirs(self.output_dir, exist_ok=True)
         carbon_atomgroups = self.golh.residues[0].atoms.select_atoms(SELECTION_C)
