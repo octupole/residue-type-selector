@@ -20,6 +20,7 @@ Example:
     python pyKmeanTrajectory_aimod.py -t topology.tpr -x trajectory.xtc -o clusters -u 60.0 -d 19.0 -b 0 -e 1000
 """
 from MDAnalysis.analysis import align, rms
+from MDAnalysis.transformations import unwrap
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -27,10 +28,36 @@ from scipy.spatial.distance import pdist, squareform
 import os
 from collections import Counter
 import warnings
-
-
+import torch
+import cupy as cp
 
 SELECTION_C = "name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18"
+#SELECTION_C = "name C1 C3 C5 C7 C9 C11 C13 C15 C17 C18"
+
+dtype = torch.float
+device = torch.device("cuda:0")
+
+def rmsd_torch(u, v):
+    u = u.view(-1, 3)
+    v = v.view(-1, 3)
+    u_centered = u - u.mean(dim=0)
+    v_centered = v - v.mean(dim=0)
+    cov_matrix = torch.mm(u_centered.T, v_centered)
+    u_rotated = torch.mm(u_centered, torch.svd(cov_matrix).U)
+    return torch.sqrt(((u_rotated - v_centered) ** 2).sum() / len(u))
+
+
+def rmsd_cupy(u, v):
+    u = u.reshape(-1, 3)
+    v = v.reshape(-1, 3)
+    u_centered = u - u.mean(axis=0)
+    v_centered = v - v.mean(axis=0)
+    rotation_matrix = cp.linalg.svd(cp.dot(u_centered.T, v_centered))[0]
+    u_rotated = cp.dot(u_centered, rotation_matrix.T)
+    return cp.sqrt(cp.mean(cp.sum((u_rotated - v_centered) ** 2, axis=1)))
+
+
+
 
 class ResidueSelector:
     def __init__(self, universe):
@@ -75,7 +102,7 @@ class GOLHClusterer:
         run():
             Executes the full clustering workflow: RMSD computation, optimal cluster determination, clustering, and output writing.
     """
-    def __init__(self, topology_file, trajectory_file, z_up, z_down, n_clusters=3, output_dir="clusters", begin=None, end=None):
+    def __init__(self, topology_file, trajectory_file, z_up, z_down, n_clusters=3, output_dir="clusters", begin=None, end=None, step=1):
         """
         Initialize the KMeans clustering on a molecular dynamics trajectory.
 
@@ -100,6 +127,7 @@ class GOLHClusterer:
         self.output_dir = output_dir
         self.begin = begin
         self.end = end
+        self.step = step
 
         self.validate_files()
 
@@ -110,6 +138,8 @@ class GOLHClusterer:
 
         self.selector = ResidueSelector(self.universe)
         self.validate_frame_range()
+        self.device=torch.device("cuda:0")
+        self.dtype = torch.float
 
     def validate_files(self):
         """
@@ -182,8 +212,8 @@ class GOLHClusterer:
         for n, positions in enumerate(ref_positions):
             ref_positions[n] -= ref_com[n]
             ref_com[n] = np.zeros(3)
-
-        for ts in self.universe.trajectory[self.begin:self.end + 1]:
+        self.universe.trajectory.add_transformations(unwrap(self.universe.atoms))
+        for ts in self.universe.trajectory[self.begin:self.end + 1:self.step]:
             print(f"Processing step: {ts.frame}, timestep: {ts.time} fs")
             mobile_positions = [ag.positions.copy() for ag in carbon_atomgroups]
             mobile_com = [ag.center_of_mass() for ag in carbon_atomgroups]
@@ -191,7 +221,6 @@ class GOLHClusterer:
             n_molecules = len(golh.residues)
             if n_molecules == 0:
                 continue
-
             for m, ag in enumerate(ref_com):
                 translation_vector = ref_com[m] - mobile_com[m]
                 mobile_positions[m] += translation_vector
@@ -201,14 +230,14 @@ class GOLHClusterer:
 
             for n, pos in enumerate(mobile_positions):
                 accumulated_positions[n] += pos
+            # Compute RMSD matrix for this frame
 
-            flattened_positions = np.array([pos.flatten() for pos in mobile_positions])
+                
             rmsd_matrix = squareform(pdist(
-                flattened_positions,
+                np.array([pos.flatten() for pos in mobile_positions]),
                 metric=lambda u, v: rms.rmsd(u.reshape(-1, 3), v.reshape(-1, 3), center=True, superposition=True)
             ))
             rmsd_matrices.append(rmsd_matrix)
-
         self.rmsd_matrix = np.mean(rmsd_matrices, axis=0)
         self.average_positions = [pos / float(len(rmsd_matrices)) for pos in accumulated_positions]
         
@@ -343,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--zdown", type=float, default=19.0, help="Lower limit for the membrane")
     parser.add_argument("-b", "--begin", type=int, default=None, help="Start frame for trajectory processing")
     parser.add_argument("-e", "--end", type=int, default=None, help="End frame for trajectory processing")
+    parser.add_argument("-dt", "--step", type=int, default=1, help="End frame for trajectory processing")
 
     args = parser.parse_args()
 
@@ -353,7 +383,8 @@ if __name__ == "__main__":
         z_down=args.zdown,
         output_dir=args.output,
         begin=args.begin,
-        end=args.end
+        end=args.end,
+        step=args.step
     )
 
     try:
