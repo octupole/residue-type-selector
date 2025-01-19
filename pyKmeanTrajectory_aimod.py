@@ -28,35 +28,78 @@ from scipy.spatial.distance import pdist, squareform
 import os
 from collections import Counter
 import warnings
-import torch
-import cupy as cp
 
 SELECTION_C = "name C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18"
-#SELECTION_C = "name C1 C3 C5 C7 C9 C11 C13 C15 C17 C18"
-
-dtype = torch.float
-device = torch.device("cuda:0")
-
-def rmsd_torch(u, v):
-    u = u.view(-1, 3)
-    v = v.view(-1, 3)
-    u_centered = u - u.mean(dim=0)
-    v_centered = v - v.mean(dim=0)
-    cov_matrix = torch.mm(u_centered.T, v_centered)
-    u_rotated = torch.mm(u_centered, torch.svd(cov_matrix).U)
-    return torch.sqrt(((u_rotated - v_centered) ** 2).sum() / len(u))
+# SELECTION_C = "name C1 C3 C5 C7 C9 C11 C13 C15 C17 C18"
 
 
-def rmsd_cupy(u, v):
-    u = u.reshape(-1, 3)
-    v = v.reshape(-1, 3)
-    u_centered = u - u.mean(axis=0)
-    v_centered = v - v.mean(axis=0)
-    rotation_matrix = cp.linalg.svd(cp.dot(u_centered.T, v_centered))[0]
-    u_rotated = cp.dot(u_centered, rotation_matrix.T)
-    return cp.sqrt(cp.mean(cp.sum((u_rotated - v_centered) ** 2, axis=1)))
+class MembranePlanes:
+    def __init__(self, universe, selection="name P"):
+        """
+        Initialize the MembranePlanes class.
 
+        Parameters:
+        - universe: MDAnalysis Universe object containing the simulation data.
+        - selection: Atom selection string to identify the membrane atoms (default "name P").
+                     Typically, phosphate atoms (P) are used for phospholipids.
+        - cutoff: Distance cutoff (in Å) to distinguish between the upper and lower membrane planes.
+        """
+        self.universe = universe
+        self.selection = selection
+        self.upper_plane_z = []
+        self.lower_plane_z = []
 
+        # Prepare the atom selection once
+        self.membrane_atoms = self.universe.select_atoms(self.selection)
+
+    def calculate_planes_for_frame(self):
+        """
+        Calculate the z-coordinates of the upper and lower membrane planes for the current frame.
+
+        Returns:
+        - (upper_z, lower_z): Tuple containing the mean z-coordinates for the upper and lower planes.
+        """
+        z_coords = self.membrane_atoms.positions[:, 2]  # Extract z-coordinates
+
+        # Determine the midpoint of the z-coordinates
+        z_mid = np.median(z_coords)
+
+        z_min = np.min(z_coords)
+
+        # Separate atoms into upper and lower planes based on their z-coordinate relative to the midpoint
+        upper_plane = z_coords[z_coords >= z_mid]
+        lower_plane = z_coords[z_coords <= z_mid]
+
+        # Compute the mean z-coordinates for the upper and lower planes
+        upper_z = np.max(upper_plane) if len(upper_plane) > 0 else np.nan
+        lower_z = np.min(lower_plane) if len(lower_plane) > 0 else np.nan
+
+        # Store the plane z-coordinates for this frame
+        self.upper_plane_z.append(upper_z)
+        self.lower_plane_z.append(lower_z)
+
+        return upper_z, lower_z
+
+    def get_planes(self):
+        """
+        Return the calculated z-coordinates for the upper and lower planes over all frames.
+
+        Returns:
+        - upper_plane_z: List of upper plane z-coordinates for each frame.
+        - lower_plane_z: List of lower plane z-coordinates for each frame.
+        """
+        return self.upper_plane_z, self.lower_plane_z
+
+# Example usage:
+# u = mda.Universe("your_topology_file", "your_trajectory_file")
+# membrane_planes = MembranePlanes(u)
+
+# Loop over frames in the trajectory externally
+# for ts in u.trajectory:
+#     upper_z, lower_z = membrane_planes.calculate_planes_for_frame()
+
+# Retrieve all plane data
+# upper_z_all, lower_z_all = membrane_planes.get_planes()
 
 
 class ResidueSelector:
@@ -73,6 +116,7 @@ class ResidueSelector:
         ]
 
         return self.universe.residues[selected_residues].atoms
+
 
 class GOLHClusterer:
     """"
@@ -102,7 +146,8 @@ class GOLHClusterer:
         run():
             Executes the full clustering workflow: RMSD computation, optimal cluster determination, clustering, and output writing.
     """
-    def __init__(self, topology_file, trajectory_file, z_up, z_down, n_clusters=3, output_dir="clusters", begin=None, end=None, step=1):
+
+    def __init__(self, topology_file, trajectory_file, z_up, z_down, n_clusters=3, output_dir="clusters", begin=None, end=None, step=1, membrane=False):
         """
         Initialize the KMeans clustering on a molecular dynamics trajectory.
 
@@ -128,18 +173,23 @@ class GOLHClusterer:
         self.begin = begin
         self.end = end
         self.step = step
-
-        self.validate_files()
+        self.universe = None
 
         try:
             self.universe = mda.Universe(topology_file, trajectory_file)
         except Exception as e:
             raise RuntimeError(f"Error loading topology/trajectory: {e}")
 
+        self.validate_files()
         self.selector = ResidueSelector(self.universe)
         self.validate_frame_range()
-        self.device=torch.device("cuda:0")
-        self.dtype = torch.float
+        if membrane:
+            print("Calculating distances for membrane-bound DOPC...")
+            membrane_planes = MembranePlanes(
+                universe=self.universe, selection='name P')
+            self.z_up, self.z_down = membrane_planes.calculate_planes_for_frame()
+            print(f"Upper plane: {self.z_up:.2f} Å, Lower plane: {
+                  self.z_down:.2f} Å")
 
     def validate_files(self):
         """
@@ -147,12 +197,18 @@ class GOLHClusterer:
 
         Raises:
             FileNotFoundError: If the topology file does not exist.
+            FileNotFoundErrfrom MDAnalysis.transformations import unwrap that the `begin` and `end` attributes are within the
+        valid range of the trajectory frames. If `begin` or `end` are not set,
+        they are initialized to the start and end of the trajectory, respectively.
+        If the frame range is out of bounds, a ValueError is raised.
             FileNotFoundError: If the trajectory file does not exist.
         """
         if not os.path.exists(self.topology_file):
-            raise FileNotFoundError(f"Topology file '{self.topology_file}' does not exist.")
+            raise FileNotFoundError(
+                f"Topology file '{self.topology_file}' does not exist.")
         if not os.path.exists(self.trajectory_file):
-            raise FileNotFoundError(f"Trajectory file '{self.trajectory_file}' does not exist.")
+            raise FileNotFoundError(
+                f"Trajectory file '{self.trajectory_file}' does not exist.")
 
     def validate_frame_range(self):
         """
@@ -198,13 +254,16 @@ class GOLHClusterer:
 
         self.universe.trajectory[self.begin]  # Set to the first frame
         golh = self.universe.select_atoms("resname GOLH or resname GOLO")
-        golh = self.selector.select_residues_in_z_range(golh, self.z_down, self.z_up)
+        golh = self.selector.select_residues_in_z_range(
+            golh, self.z_down, self.z_up)
         self.golh = golh
 
-        carbon_atomgroups = [mol.atoms.select_atoms(SELECTION_C) for mol in golh.residues]
+        carbon_atomgroups = [mol.atoms.select_atoms(
+            SELECTION_C) for mol in golh.residues]
         n_atoms_per_group = [len(ag) for ag in carbon_atomgroups]
 
-        accumulated_positions = [np.zeros((n_atoms, 3)) for n_atoms in n_atoms_per_group]
+        accumulated_positions = [np.zeros((n_atoms, 3))
+                                 for n_atoms in n_atoms_per_group]
 
         ref_positions = [ag.positions.copy() for ag in carbon_atomgroups]
         ref_com = [ag.center_of_mass() for ag in carbon_atomgroups]
@@ -212,10 +271,12 @@ class GOLHClusterer:
         for n, positions in enumerate(ref_positions):
             ref_positions[n] -= ref_com[n]
             ref_com[n] = np.zeros(3)
-        self.universe.trajectory.add_transformations(unwrap(self.universe.atoms))
+        self.universe.trajectory.add_transformations(
+            unwrap(self.universe.atoms))
         for ts in self.universe.trajectory[self.begin:self.end + 1:self.step]:
             print(f"Processing step: {ts.frame}, timestep: {ts.time} fs")
-            mobile_positions = [ag.positions.copy() for ag in carbon_atomgroups]
+            mobile_positions = [ag.positions.copy()
+                                for ag in carbon_atomgroups]
             mobile_com = [ag.center_of_mass() for ag in carbon_atomgroups]
 
             n_molecules = len(golh.residues)
@@ -225,22 +286,24 @@ class GOLHClusterer:
                 translation_vector = ref_com[m] - mobile_com[m]
                 mobile_positions[m] += translation_vector
 
-                rot_matrix, _ = align.rotation_matrix(mobile_positions[m], ref_positions[m])
+                rot_matrix, _ = align.rotation_matrix(
+                    mobile_positions[m], ref_positions[m])
                 mobile_positions[m] = mobile_positions[m] @ rot_matrix.T
 
             for n, pos in enumerate(mobile_positions):
                 accumulated_positions[n] += pos
             # Compute RMSD matrix for this frame
 
-                
             rmsd_matrix = squareform(pdist(
                 np.array([pos.flatten() for pos in mobile_positions]),
-                metric=lambda u, v: rms.rmsd(u.reshape(-1, 3), v.reshape(-1, 3), center=True, superposition=True)
+                metric=lambda u, v: rms.rmsd(
+                    u.reshape(-1, 3), v.reshape(-1, 3), center=True, superposition=True)
             ))
             rmsd_matrices.append(rmsd_matrix)
         self.rmsd_matrix = np.mean(rmsd_matrices, axis=0)
-        self.average_positions = [pos / float(len(rmsd_matrices)) for pos in accumulated_positions]
-        
+        self.average_positions = [
+            pos / float(len(rmsd_matrices)) for pos in accumulated_positions]
+
     def write_cluster_outputs(self, output_dir='clusters'):
         """
         Write the cluster outputs to the specified directory.
@@ -253,49 +316,58 @@ class GOLHClusterer:
         None
         """
         os.makedirs(self.output_dir, exist_ok=True)
-        carbon_atomgroups = self.golh.residues[0].atoms.select_atoms(SELECTION_C)
-        
+        carbon_atomgroups = self.golh.residues[0].atoms.select_atoms(
+            SELECTION_C)
+
         for cluster_id in range(self.n_clusters):
-            cluster_indices = [i for i, mol in enumerate(self.golh.residues) if self.cluster_labels[i] == cluster_id]
-            cluster_members = [mol for i, mol in enumerate(self.golh.residues) if self.cluster_labels[i] == cluster_id]
-            
-            ref_carbon_atoms = cluster_members[0].atoms.select_atoms(SELECTION_C)  # Select atoms of the reference molecule
-            ref_carbon_atoms.positions=self.average_positions[cluster_indices[0]]
+            cluster_indices = [i for i, mol in enumerate(
+                self.golh.residues) if self.cluster_labels[i] == cluster_id]
+            cluster_members = [mol for i, mol in enumerate(
+                self.golh.residues) if self.cluster_labels[i] == cluster_id]
+
+            ref_carbon_atoms = cluster_members[0].atoms.select_atoms(
+                SELECTION_C)  # Select atoms of the reference molecule
+            ref_carbon_atoms.positions = self.average_positions[cluster_indices[0]]
 
             for i, molecule in enumerate(cluster_members):
                 if i == 0:
                     continue
                 mobile_carbon_atoms = molecule.atoms.select_atoms(SELECTION_C)
-                mobile_carbon_atoms.positions=self.average_positions[cluster_indices[i]]
-                
-                
+                mobile_carbon_atoms.positions = self.average_positions[cluster_indices[i]]
+
                 # 1. Translation to overlap centers of mass
-                translation_vector = ref_carbon_atoms.center_of_mass() - mobile_carbon_atoms.center_of_mass()
+                translation_vector = ref_carbon_atoms.center_of_mass() - \
+                    mobile_carbon_atoms.center_of_mass()
                 molecule.atoms.translate(translation_vector)
 
                 # 2. Rotation using align.rotation_matrix
-                rotation_matrix, rmsd = align.rotation_matrix(mobile_carbon_atoms.positions, ref_carbon_atoms.positions)
+                rotation_matrix, rmsd = align.rotation_matrix(
+                    mobile_carbon_atoms.positions, ref_carbon_atoms.positions)
                 molecule.atoms.rotate(rotation_matrix)
 
         # --- Calculate and Write Average Structure ---
-            avg_positions = np.mean([mol.atoms.select_atoms(SELECTION_C).positions for mol in cluster_members], axis=0)
-            avg_universe = mda.Merge(cluster_members[0].atoms.select_atoms(SELECTION_C))  # Use the first molecule as a template
+            avg_positions = np.mean([mol.atoms.select_atoms(
+                SELECTION_C).positions for mol in cluster_members], axis=0)
+            avg_universe = mda.Merge(cluster_members[0].atoms.select_atoms(
+                SELECTION_C))  # Use the first molecule as a template
             avg_universe.atoms.positions = avg_positions
 
-            avg_output_filename = os.path.join(output_dir, f"cluster_{cluster_id + 1}_avg.pdb")
+            avg_output_filename = os.path.join(
+                output_dir, f"cluster_{cluster_id + 1}_avg.pdb")
 
             with open(avg_output_filename, 'w') as f:
                 for atom in avg_universe.atoms:
                     atom_line = f"ATOM  {atom.id:>5d}  {atom.name:<4s}{atom.resname:>3s} {atom.resid:>4d}    " \
-                                f"{atom.position[0]:8.3f}{atom.position[1]:8.3f}{atom.position[2]:8.3f}" \
-                                f"{1.00:6.2f}{0.00:6.2f}          {atom.element:>2s}  \n"
+                        f"{atom.position[0]:8.3f}{atom.position[1]:8.3f}{atom.position[2]:8.3f}" \
+                        f"{1.00:6.2f}{0.00:6.2f}          {
+                            atom.element:>2s}  \n"
                     f.write(atom_line)
                 # Write CONECT records for linear chain
                 for i in range(1, len(avg_universe.atoms)):
                     f.write(f"CONECT{i:>5d}{i+1:>5d}\n")  # Connect i to i+1
                     if i > 1:  # For atoms after the first, connect to the previous atom as well
-                        f.write(f"CONECT{i+1:>5d}{i:>5d}\n")  # Connect i+1 to i
-
+                        # Connect i+1 to i
+                        f.write(f"CONECT{i+1:>5d}{i:>5d}\n")
 
     def optimal_clusters(self, max_clusters=10):
         """
@@ -341,9 +413,11 @@ class GOLHClusterer:
         self.cluster_labels = kmeans.fit_predict(self.rmsd_matrix)
         print(f"Found {self.n_clusters} clusters")
         for cluster_id in range(self.n_clusters):
-            cluster_resname = [mol.resname for i, mol in enumerate(self.golh.residues) if self.cluster_labels[i] == cluster_id]
+            cluster_resname = [mol.resname for i, mol in enumerate(
+                self.golh.residues) if self.cluster_labels[i] == cluster_id]
             counts = Counter(cluster_resname)
-            print(f"Cluster {cluster_id+1}: TOT: {counts['GOLO']+counts['GOLH']}, GOLH: {counts['GOLH']}, GOLO: {counts['GOLO']}")
+            print(f"Cluster {cluster_id+1}: TOT: {counts['GOLO']+counts['GOLH']}, GOLH: {
+                  counts['GOLH']}, GOLO: {counts['GOLO']}")
 
     def run(self):
         """
@@ -360,22 +434,33 @@ class GOLHClusterer:
         self.perform_clustering()
         self.write_cluster_outputs()
 
+
 if __name__ == "__main__":
     import argparse
 # Suppress specific warnings
     warnings.filterwarnings("ignore", category=DeprecationWarning)
-    parser = argparse.ArgumentParser(description="Cluster GOLH conformations using KMeans.")
-    parser.add_argument("-t", "--topology", required=True, help="Input topology file (e.g., .tpr)")
-    parser.add_argument("-x", "--trajectory", required=True, help="Input trajectory file (e.g., .xtc or .trr)")
-    parser.add_argument("-o", "--output", default="clusters", help="Output directory")
-    parser.add_argument("-u", "--zup", type=float, default=60.0, help="Upper limit for the membrane")
-    parser.add_argument("-d", "--zdown", type=float, default=19.0, help="Lower limit for the membrane")
-    parser.add_argument("-b", "--begin", type=int, default=None, help="Start frame for trajectory processing")
-    parser.add_argument("-e", "--end", type=int, default=None, help="End frame for trajectory processing")
-    parser.add_argument("-dt", "--step", type=int, default=1, help="End frame for trajectory processing")
+    parser = argparse.ArgumentParser(
+        description="Cluster GOLH conformations using KMeans.")
+    parser.add_argument("-t", "--topology", required=True,
+                        help="Input topology file (e.g., .tpr)")
+    parser.add_argument("-x", "--trajectory", required=True,
+                        help="Input trajectory file (e.g., .xtc or .trr)")
+    parser.add_argument("-o", "--output", default="clusters",
+                        help="Output directory")
+    parser.add_argument("-u", "--zup", type=float,
+                        default=60.0, help="Upper limit for the membrane")
+    parser.add_argument("-d", "--zdown", type=float,
+                        default=19.0, help="Lower limit for the membrane")
+    parser.add_argument("-b", "--begin", type=int, default=None,
+                        help="Start frame for trajectory processing")
+    parser.add_argument("-e", "--end", type=int, default=None,
+                        help="End frame for trajectory processing")
+    parser.add_argument("-dt", "--step", type=int, default=1,
+                        help="End frame for trajectory processing")
+    parser.add_argument("--membrane", action="store_true",
+                        help="Enable select dopc if in a membrane")
 
     args = parser.parse_args()
-
     clusterer = GOLHClusterer(
         topology_file=args.topology,
         trajectory_file=args.trajectory,
@@ -384,7 +469,8 @@ if __name__ == "__main__":
         output_dir=args.output,
         begin=args.begin,
         end=args.end,
-        step=args.step
+        step=args.step,
+        membrane=args.membrane
     )
 
     try:
